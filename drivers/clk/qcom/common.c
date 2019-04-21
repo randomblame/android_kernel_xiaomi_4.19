@@ -1,6 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, 2017-2018, The Linux Foundation. All rights reserved.
+ *
+ * This software is licensed under the terms of the GNU General Public
+ * License version 2, as published by the Free Software Foundation, and
+ * may be copied, distributed, and modified under those terms.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/export.h>
@@ -20,7 +28,9 @@
 struct qcom_cc {
 	struct qcom_reset_controller reset;
 	struct clk_regmap **rclks;
+	struct clk_hw **hwclks;
 	size_t num_rclks;
+	size_t num_hwclks;
 };
 
 const
@@ -197,10 +207,13 @@ static struct clk_hw *qcom_cc_clk_hw_get(struct of_phandle_args *clkspec,
 	struct qcom_cc *cc = data;
 	unsigned int idx = clkspec->args[0];
 
-	if (idx >= cc->num_rclks) {
-		pr_err("%s: invalid index %u\n", __func__, idx);
+	if (idx >= cc->num_rclks + cc->num_hwclks) {
+		pr_err("invalid index %u\n", idx);
 		return ERR_PTR(-EINVAL);
 	}
+
+	if (idx < cc->num_hwclks && cc->hwclks[idx])
+		return cc->hwclks[idx];
 
 	return cc->rclks[idx] ? &cc->rclks[idx]->hw : ERR_PTR(-ENOENT);
 }
@@ -214,11 +227,40 @@ int qcom_cc_really_probe(struct platform_device *pdev,
 	struct qcom_cc *cc;
 	struct gdsc_desc *scd;
 	size_t num_clks = desc->num_clks;
+	size_t num_hwclks = desc->num_hwclks;
 	struct clk_regmap **rclks = desc->clks;
+	struct clk_hw **hwclks = desc->hwclks;
 
 	cc = devm_kzalloc(dev, sizeof(*cc), GFP_KERNEL);
 	if (!cc)
 		return -ENOMEM;
+
+	cc->rclks = rclks;
+	cc->num_rclks = num_clks;
+	cc->hwclks = hwclks;
+	cc->num_hwclks = num_hwclks;
+
+	for (i = 0; i < num_hwclks; i++) {
+		if (!hwclks[i])
+			continue;
+
+		ret = devm_clk_hw_register(dev, hwclks[i]);
+		if (ret)
+			return ret;
+	}
+
+	for (i = 0; i < num_clks; i++) {
+		if (!rclks[i])
+			continue;
+
+		ret = devm_clk_register_regmap(dev, rclks[i]);
+		if (ret)
+			return ret;
+	}
+
+	ret = devm_of_clk_add_hw_provider(dev, qcom_cc_clk_hw_get, cc);
+	if (ret)
+		return ret;
 
 	reset = &cc->reset;
 	reset->rcdev.of_node = dev->of_node;
@@ -248,22 +290,6 @@ int qcom_cc_really_probe(struct platform_device *pdev,
 			return ret;
 	}
 
-	cc->rclks = rclks;
-	cc->num_rclks = num_clks;
-
-	for (i = 0; i < num_clks; i++) {
-		if (!rclks[i])
-			continue;
-
-		ret = devm_clk_register_regmap(dev, rclks[i]);
-		if (ret)
-			return ret;
-	}
-
-	ret = devm_of_clk_add_hw_provider(dev, qcom_cc_clk_hw_get, cc);
-	if (ret)
-		return ret;
-
 	return 0;
 }
 EXPORT_SYMBOL_GPL(qcom_cc_really_probe);
@@ -279,5 +305,27 @@ int qcom_cc_probe(struct platform_device *pdev, const struct qcom_cc_desc *desc)
 	return qcom_cc_really_probe(pdev, desc, regmap);
 }
 EXPORT_SYMBOL_GPL(qcom_cc_probe);
+
+int qcom_cc_register_rcg_dfs(struct platform_device *pdev,
+			 const struct qcom_cc_dfs_desc *desc)
+{
+	struct clk_dfs *clks = desc->clks;
+	size_t num_clks = desc->num_clks;
+	int i, ret = 0;
+
+	for (i = 0; i < num_clks; i++) {
+		ret = clk_rcg2_get_dfs_clock_rate(clks[i].rcg, &pdev->dev,
+						clks[i].rcg_flags);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"Failed calculating DFS frequencies for %s\n",
+				clk_hw_get_name(&(clks[i].rcg)->clkr.hw));
+			break;
+		}
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(qcom_cc_register_rcg_dfs);
 
 MODULE_LICENSE("GPL v2");

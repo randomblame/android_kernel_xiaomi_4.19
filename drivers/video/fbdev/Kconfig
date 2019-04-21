@@ -2238,6 +2238,19 @@ config FB_MX3
 	  far only synchronous displays are supported. If you plan to use
 	  an LCD display with your i.MX31 system, say Y here.
 
+config FB_MSM
+	tristate "MSM Framebuffer support"
+	depends on FB && ARCH_QCOM
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	select SYNC_FILE
+	---help---
+	  The MSM driver implements a frame buffer interface to
+	  provide access to the display hardware and provide
+	  a way for users to display graphics
+	  on connected display panels.
+
 config FB_BROADSHEET
 	tristate "E-Ink Broadsheet/Epson S1D13521 controller support"
 	depends on FB

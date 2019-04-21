@@ -18,7 +18,6 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
-#include <linux/regmap.h>
 #include <linux/mailbox_controller.h>
 
 #define QCOM_APCS_IPC_BITS	32
@@ -27,17 +26,8 @@ struct qcom_apcs_ipc {
 	struct mbox_controller mbox;
 	struct mbox_chan mbox_chans[QCOM_APCS_IPC_BITS];
 
-	struct regmap *regmap;
+	void __iomem *reg;
 	unsigned long offset;
-	struct platform_device *clk;
-};
-
-static const struct regmap_config apcs_regmap_config = {
-	.reg_bits = 32,
-	.reg_stride = 4,
-	.val_bits = 32,
-	.max_register = 0x1000,
-	.fast_io = true,
 };
 
 static int qcom_apcs_ipc_send_data(struct mbox_chan *chan, void *data)
@@ -46,7 +36,9 @@ static int qcom_apcs_ipc_send_data(struct mbox_chan *chan, void *data)
 						  struct qcom_apcs_ipc, mbox);
 	unsigned long idx = (unsigned long)chan->con_priv;
 
-	return regmap_write(apcs->regmap, apcs->offset, BIT(idx));
+	writel(BIT(idx), apcs->reg);
+
+	return 0;
 }
 
 static const struct mbox_chan_ops qcom_apcs_ipc_ops = {
@@ -55,9 +47,7 @@ static const struct mbox_chan_ops qcom_apcs_ipc_ops = {
 
 static int qcom_apcs_ipc_probe(struct platform_device *pdev)
 {
-	struct device_node *np = pdev->dev.of_node;
 	struct qcom_apcs_ipc *apcs;
-	struct regmap *regmap;
 	struct resource *res;
 	unsigned long offset;
 	void __iomem *base;
@@ -69,18 +59,15 @@ static int qcom_apcs_ipc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	base = devm_ioremap_resource(&pdev->dev, res);
+	if (!res)
+		return -ENODEV;
+	base = devm_ioremap(&pdev->dev, res->start, resource_size(res));
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
-	regmap = devm_regmap_init_mmio(&pdev->dev, base, &apcs_regmap_config);
-	if (IS_ERR(regmap))
-		return PTR_ERR(regmap);
-
 	offset = (unsigned long)of_device_get_match_data(&pdev->dev);
 
-	apcs->regmap = regmap;
-	apcs->offset = offset;
+	apcs->reg = base + offset;
 
 	/* Initialize channel identifiers */
 	for (i = 0; i < ARRAY_SIZE(apcs->mbox_chans); i++)
@@ -97,14 +84,6 @@ static int qcom_apcs_ipc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	if (of_device_is_compatible(np, "qcom,msm8916-apcs-kpss-global")) {
-		apcs->clk = platform_device_register_data(&pdev->dev,
-							  "qcom-apcs-msm8916-clk",
-							  -1, NULL, 0);
-		if (IS_ERR(apcs->clk))
-			dev_err(&pdev->dev, "failed to register APCS clk\n");
-	}
-
 	platform_set_drvdata(pdev, apcs);
 
 	return 0;
@@ -113,10 +92,8 @@ static int qcom_apcs_ipc_probe(struct platform_device *pdev)
 static int qcom_apcs_ipc_remove(struct platform_device *pdev)
 {
 	struct qcom_apcs_ipc *apcs = platform_get_drvdata(pdev);
-	struct platform_device *clk = apcs->clk;
 
 	mbox_controller_unregister(&apcs->mbox);
-	platform_device_unregister(clk);
 
 	return 0;
 }
@@ -125,8 +102,10 @@ static int qcom_apcs_ipc_remove(struct platform_device *pdev)
 static const struct of_device_id qcom_apcs_ipc_of_match[] = {
 	{ .compatible = "qcom,msm8916-apcs-kpss-global", .data = (void *)8 },
 	{ .compatible = "qcom,msm8996-apcs-hmss-global", .data = (void *)16 },
-	{ .compatible = "qcom,msm8998-apcs-hmss-global", .data = (void *)8 },
-	{ .compatible = "qcom,sdm845-apss-shared", .data = (void *)12 },
+	{ .compatible = "qcom,sm8150-apcs-hmss-global", .data = (void *)12 },
+	{ .compatible = "qcom,sm8150-spcs-global", .data = (void *)0 },
+	{ .compatible = "qcom,sdxprairie-apcs-gcc", .data = (void *)8 },
+	{ .compatible = "qcom,trinket-apcs-hmss-global", .data = (void *)8 },
 	{}
 };
 MODULE_DEVICE_TABLE(of, qcom_apcs_ipc_of_match);
@@ -137,6 +116,7 @@ static struct platform_driver qcom_apcs_ipc_driver = {
 	.driver = {
 		.name = "qcom_apcs_ipc",
 		.of_match_table = qcom_apcs_ipc_of_match,
+		.suppress_bind_attrs = true,
 	},
 };
 
